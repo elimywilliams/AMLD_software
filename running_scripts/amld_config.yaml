@@ -1,0 +1,25 @@
+AMLD_vehicle: true
+CSU: false
+aeris: false
+agg: false
+back_obs_num: '102'
+baseline_percentile: '37.5'
+buffer_distance: '30'
+car_id: se_sample
+ch4_min_thresh: '.005'
+correlation_minimum: '.25'
+engineering: false
+function_file_Loc: /Users/emilywilliams/OneDrive - Southern Cross Corp/amld_script/functions/amld/
+initial_time_ignore: '0'
+max_car_speed: '450'
+min_car_speed: '0'
+min_elevated: '1'
+polygon: '9'
+r_min: '-2'
+raw_data_loc: /Users/emilywilliams/Documents/example
+results_folder_loc: /Users/emilywilliams/Documents/example/
+shift: -5 #if the vehicle is the SOUTHERN CROSS VEHICLE
+# shift: -7 #if the vehicle is AERIS VEHICLE
+threshold: '.025'
+time_push: 0
+time_thresh: '5.0'

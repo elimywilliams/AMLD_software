@@ -1,0 +1,11 @@
+pandas~=1.1.4
+geopandas~=0.8.1
+numpy~=1.19.4
+geopandas
+datetime
+pytest-shutil
+shapely~=1.7.1
+swifter~=1.0.7
+PyYAML==5.3.1
+Rtree~=0.9.4
+matplotlib~=3.3.3
