@@ -2,6 +2,9 @@
 
 The only files that need to be edited when you want to run the algorithm is:
 
-the config file()
+The config file: amld_config.yaml
 
-then you just run the amld_script.py
+Then you just run the runAMLD.py file.
+
+The packages requirements are found in the \italics{requirements.txt}
+
