@@ -1,25 +1,39 @@
+## which vehicle was used
 AMLD_vehicle: true
 CSU: false
 aeris: false
 agg: false
-back_obs_num: '102'
+## observations desired in background (10hz for AMLD vehicle)
+back_obs_num: '1020'
+# what percentile to calculate for baseline
 baseline_percentile: '37.5'
+# buffer distance (m)
 buffer_distance: '30'
+# what do you want the car to be called
 car_id: se_sample
 ch4_min_thresh: '.005'
 correlation_minimum: '.25'
 engineering: false
 function_file_Loc: /Users/emilywilliams/OneDrive - Southern Cross Corp/amld_script/functions/amld/
 initial_time_ignore: '0'
+
+# car speed min/max
 max_car_speed: '450'
 min_car_speed: '0'
+
+# how many elevated readings do you need for an observed peak?
 min_elevated: '1'
+# which polygon (not relevant)
 polygon: '9'
+# minimum r value needed (-1,1)
 r_min: '-2'
+## location where the raw data is
 raw_data_loc: /Users/emilywilliams/Documents/example
+## location where you want results (needs the /)
 results_folder_loc: /Users/emilywilliams/Documents/example/
 shift: -5 #if the vehicle is the SOUTHERN CROSS VEHICLE
 # shift: -7 #if the vehicle is AERIS VEHICLE
+# percentage above baseline needed for elevated reading
 threshold: '.025'
 time_push: 0
 time_thresh: '5.0'
