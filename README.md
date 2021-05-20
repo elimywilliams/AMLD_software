@@ -6,5 +6,5 @@ The config file: amld_config.yaml
 
 Then you just run the runAMLD.py file.
 
-The packages requirements are found in the \italics{requirements.txt}
+The packages requirements are found in the *requirements.txt*
 
