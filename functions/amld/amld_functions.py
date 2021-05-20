@@ -5683,3 +5683,695 @@ def identify_peaks_amld(xCar, xDate, xDir, xFilename, outDir, processedFileLoc, 
         print("Error in Identify Peaks")
         return False
 
+def identify_peaks_amld_aeris(xCar, xDate, xDir, xFilename, outDir, processedFileLoc, Engineering, threshold='.1',
+                   rthresh = '.7',
+                  xTimeThreshold='5.0', minElevated='2', xB='102', basePerc='50',aeris=True):
+    """ input a processed data file, and finds the locations of the elevated readings (observed peaks)
+    input:
+        xCar: name of the car (to make filename)
+        xDate: date of the reading
+        xDir: directory where the file is located
+        xFilename: name of the file
+        outDir: directory to take it
+        processedFileLoc
+        Engineering: T/F if the processed file was made using an engineering file
+        threshold: the proportion above baseline that is marked as elevated (i.e. .1 corresponds to 10% above
+        xTimeThreshold: not super sure
+        minElevated: # of elevated readings that need to be there to constitute an observed peak
+        xB: Number of observations used in background average
+        basePerc: percentile used for background average (i.e. 50 is median)
+    output:
+        saved log file
+        saved csv file with identified peaks
+        saved info.csv file
+        saved json file
+    """
+    import csv, numpy
+    import shutil
+    from shapely.geometry import Point
+    import pandas as pd
+    import geopandas as gpd
+
+    try:
+        #amld = True
+        baseCalc = float(basePerc)
+        xABThreshold = float(threshold)
+        minElevated = float(minElevated)
+        rMin = float(rthresh)
+        xDistThreshold = 160.0  # find the maximum CH4 reading of observations within street segments of this grouping distance in meters
+        xSDF = 4  # multiplier times standard deviation for floating baseline added to mean
+
+        xB = int(xB)
+        xTimeThreshold = float(xTimeThreshold)
+        fn = xDir + xFilename  # set processed csv file to read in
+        fnOut = outDir + "Peaks" + "_" + xCar + "_" + xDate.replace("-", "") + ".csv"
+        fnShape = outDir + "Peaks" + "_" + xCar + "_" + xDate.replace("-", "") + ".shp"
+        fnLog = outDir + "Peaks" + "_" + xCar + "_" + xDate.replace("-", "") + ".log"
+        pkLog = outDir + "Peaks" + "_" + xCar + "_" + xDate.replace("-","") + "_info.csv"
+        jsonOut = outDir + "Peaks" + "_" + xCar + "_" + xDate.replace("-","") + ".geojson"
+        infOut = processedFileLoc + xCar + "_" + xDate.replace("-", "") + "_info.csv"
+
+        ### TEST THING
+        fn = xDir + xFilename  # set raw text file to read in
+        filenames = nameFiles(outDir,processedFileLoc,xCar,xDate,True)
+        fnOut = filenames['fnOut']
+        fnShape = filenames['fnShape']
+        fnLog = filenames['fnLog']
+        pkLog = filenames['pkLog']
+        jsonOut = filenames['jsonOut']
+        infOut = filenames['infOut']
+
+        print(f"{outDir}Peaks_{xCar}_{xDate}_info.csv")
+        fLog = open(fnLog, 'w')
+        shutil.copy(infOut, pkLog)
+
+        # convert lists to numpy arrays
+        tempFile = pd.read_csv(fn)
+        tempFile['ttot'] = tempFile['ttot'].astype(float)
+        tempFile['ttot'] = tempFile['ttot'].astype(str)
+
+        #tempFile.sort_values(by='ttot', ascending=True).reset_index(drop=True).to_csv(
+       #     '/Users/emilywilliams/Desktop/arg.csv')
+
+        colnames = tempFile.columns
+
+        aEpochTime = numpy.array(tempFile.iloc[:,colnames.get_loc('nearest10hz')])
+        aDateTime = numpy.array(tempFile.apply(lambda x: x.DATE.replace('-','') + x.TIME.replace(':',''),axis=1))
+        aLat = numpy.array(tempFile.iloc[:,colnames.get_loc('LAT')])
+        aLon = numpy.array(tempFile.iloc[:,colnames.get_loc('LONG')])
+        aCH4 = numpy.array(tempFile.iloc[:,colnames.get_loc('CH4')])
+        aTCH4 = numpy.array(tempFile.iloc[:,colnames.get_loc('CH4')])
+        aMean = numpy.zeros(len(aEpochTime))
+        aCH4Mean_true = numpy.zeros(len(aEpochTime))
+        aCH4STD= numpy.zeros(len(aEpochTime))
+        aCH4Max= numpy.zeros(len(aEpochTime))
+        aCH4Min= numpy.zeros(len(aEpochTime))
+        aCH4Median= numpy.zeros(len(aEpochTime))
+
+        aMeanC2H6 = numpy.zeros(len(aEpochTime))
+        aThreshold = numpy.zeros(len(aEpochTime))
+        aOdom = numpy.array(tempFile.apply(lambda x: x.VELOCITY*.1,axis=1).cumsum())
+        aC2H6 = numpy.array(tempFile.iloc[:,colnames.get_loc('C2H6')])
+        aC2C1 = numpy.array(tempFile.iloc[:,colnames.get_loc('C1C2')])
+        aR = numpy.array(tempFile.iloc[:,colnames.get_loc('R')])
+        if aeris:
+            aBearingCCWE = numpy.array(tempFile.iloc[:, colnames.get_loc('bearing')])
+            aBearingCWN = numpy.array(tempFile.iloc[:, colnames.get_loc('bearing')])
+            aWS_cor = numpy.array(tempFile.iloc[:, colnames.get_loc('r_avg')])
+            aWD_CCWE_cor = numpy.array(tempFile.iloc[:, colnames.get_loc('theta_avg')])
+            aWD_CWN_cor = numpy.array(tempFile.iloc[:, colnames.get_loc('theta_avg')])
+
+        if not aeris:
+            aBearingCCWE = numpy.array(tempFile.iloc[:,colnames.get_loc('Bearing_ccwe')])
+            aBearingCWN = numpy.array(tempFile.iloc[:,colnames.get_loc('Bearing_cwn')])
+            aWS_cor = numpy.array(tempFile.iloc[:, colnames.get_loc('airmar_ws')])
+            aWD_CCWE_cor = numpy.array(tempFile.iloc[:, colnames.get_loc('airmar_wd_cor_ccwe')])
+            aWD_CWN_cor = numpy.array(tempFile.iloc[:, colnames.get_loc('airmar_wd_cor_cwn')])
+
+        arolling8= numpy.array(tempFile.iloc[:,colnames.get_loc('rollingR_8')])
+        arolling15= numpy.array(tempFile.iloc[:,colnames.get_loc('rollingR_15')])
+        arolling30= numpy.array(tempFile.iloc[:,colnames.get_loc('rollingR_30')])
+        arolling45= numpy.array(tempFile.iloc[:,colnames.get_loc('rollingR_45')])
+        arolling60= numpy.array(tempFile.iloc[:,colnames.get_loc('rollingR_60')])
+
+        arollingc2h6_15= numpy.array(tempFile.iloc[:,colnames.get_loc('rollingc2h6_15')])
+        arollingc2h6_30= numpy.array(tempFile.iloc[:,colnames.get_loc('rollingc2h6_30')])
+        arollingc2h6_45= numpy.array(tempFile.iloc[:,colnames.get_loc('rollingc2h6_45')])
+
+        arollingch4_60= numpy.array(tempFile.iloc[:,colnames.get_loc('rollingch4_60')])
+        arollingch4_45= numpy.array(tempFile.iloc[:,colnames.get_loc('rollingch4_45')])
+        arollingch4_30= numpy.array(tempFile.iloc[:,colnames.get_loc('rollingch4_30')])
+        arollingch4_15= numpy.array(tempFile.iloc[:,colnames.get_loc('rollingch4_15')])
+
+
+
+        xLatMean = numpy.mean(aLat)
+        xLonMean = numpy.mean(aLon)
+        #xCH4Mean = numpy.mean(aCH4)
+        #xC2H6Mean = numpy.mean(aC2H6)
+        #xC2C1Mean = numpy.mean(aC2C1)
+
+        fLog.write("Day CH4_mean = " + str(numpy.mean(aCH4)) +
+                   ", Day CH4 SD = " + str(numpy.std(aCH4)) + "\n")
+        fLog.write("Day C2H6 Mean = " + str(numpy.mean(aC2H6)) +
+                   ", Day C2H6 SD = " + str(numpy.std(aC2H6)) + "\n")
+        fLog.write("Center lon/lat = " + str(xLonMean) + ", " + str(xLatMean) + "\n")
+
+        lstCH4_AB = []
+        count = tempFile.shape[0]
+        # generate list of the index for observations that were above the threshold
+        for i in range(0, count - 2):
+            if ((count - 2) > xB):
+                topBound = min((i + xB), (count - 2))
+                botBound = max((i - xB), 0)
+
+                for t in range(min((i + xB), (count - 2)), i, -1):
+                    if aEpochTime[t] < (aEpochTime[i] + (xB / 2)):
+                        topBound = t
+                        break
+                for b in range(max((i - xB), 0), i):
+                    if aEpochTime[b] > (aEpochTime[i] - (xB / 2)):
+                        botBound = b
+                        break
+
+                xCH4Mean = numpy.percentile(aCH4[botBound:topBound], baseCalc)
+                xC2H6Mean = numpy.percentile(aC2H6[botBound:topBound], baseCalc)
+                xCH4Mean_true = numpy.mean(aCH4[botBound:topBound])
+                xCH4STD = numpy.std(aCH4[botBound:topBound])
+                xCH4Min = numpy.min(aCH4[botBound:topBound])
+                xCH4Max = numpy.max(aCH4[botBound:topBound])
+                xCH4Median = numpy.percentile(aCH4[botBound:topBound],50)
+
+
+            # xCH4SD = numpy.std(aCH4[botBound:topBound])
+            else:
+                xCH4Mean = numpy.percentile(aCH4[0:(count - 2)], baseCalc)
+                xC2H6Mean = numpy.percentile(aC2H6[0:(count - 2)], baseCalc)
+                xCH4Mean_true = numpy.mean(aCH4[0:(count - 2)])
+                xCH4STD = numpy.std(aCH4[0:(count - 2)])
+                xCH4Min = numpy.min(aCH4[0:(count - 2)])
+                xCH4Max = numpy.max(aCH4[0:(count - 2)])
+                xCH4Median = numpy.percentile(aCH4[0:(count - 2)],50)
+
+
+                # xCH4SD = numpy.std(aCH4[0:(count-2)])
+            xThreshold = xCH4Mean + (xCH4Mean * xABThreshold)
+            xThreshold_c2h6 = xC2H6Mean + (xC2H6Mean * xABThreshold)
+
+            if (aCH4[i] > xThreshold and aR[i]>rMin):
+            #if (aCH4[i] > xThreshold):
+                lstCH4_AB.append(i)
+                aMean[i] = xCH4Mean
+                aMeanC2H6[i] = xC2H6Mean
+                aThreshold[i] = xThreshold
+                aCH4STD[i] = xCH4STD
+                aCH4Max[i] = xCH4Max
+                aCH4Min[i] = xCH4Min
+                aCH4Mean_true[i] = xCH4Mean_true
+                aCH4Median[i] = xCH4Median
+
+        # now group the above baseline threshold observations into groups based on distance threshold
+        lstCH4_ABP = []; xDistPeak = 0.0; xCH4Peak = 0.0;
+        xTime = 0.0; cntPeak = 0; cnt = 0; sID = ""; sPeriod5Min = ""; prevIndex = 0;
+
+        for i in lstCH4_AB:
+            if (cnt == 0):
+                xLon1 = aLon[i]
+                xLat1 = aLat[i]
+                xOdom = aOdom[i]
+            else:
+                # calculate distance between points
+                xDist = haversine(xLat1, xLon1, aLat[i], aLon[i])
+                xDistPeak += xDist
+                xCH4Peak += (xDist * (aCH4[i] - aMean[i]))
+                xLon1 = aLon[i]
+                xLat1 = aLat[i]
+                xOdom = aOdom[i]
+                if (sID == ""):
+                    xTime = aEpochTime[i]
+                    sID = str(xCar) + "_" + str(xTime)
+                    sPeriod5Min = str(int((aEpochTime[i] - 1350000000) / (30 * 1)))  # 30 sec
+                if ((aEpochTime[i] - aEpochTime[prevIndex]) > xTimeThreshold):  # initial start of a observed peak
+                    cntPeak += 1
+                    xTime = aEpochTime[i]
+                    xDistPeak = 0.0
+                    xCH4Peak = 0.0
+                    sID = str(xCar) + "_" + str(xTime)
+                    sPeriod5Min = str(int((aEpochTime[i] - 1350000000) / (30 * 1)))  # 30 sec
+                    # print str(i) +", " + str(xDist) + "," + str(cntPeak) +"," + str(xDistPeak)
+                #lstCH4_ABP.append(
+                #    [sID, xTime, aEpochTime[i], aDateTime[i], aCH4[i], aLon[i], aLat[i], aMean[i], aThreshold[i],
+                #     xDistPeak, xCH4Peak, aTCH4[i],aC2H6[i],aC2C1[i],aR[i],aMeanC2H6[i], sPeriod5Min, xOdom,
+                #     aUavg[i],aVavg[i],aWavg[i],aRavg[i],aThavg[i]])
+                lstCH4_ABP.append(
+                    [sID, xTime, aEpochTime[i], aDateTime[i], aCH4[i], aLon[i], aLat[i], aMean[i],aCH4Mean_true[i],aCH4STD[i],
+                     aCH4Max[i],aCH4Min[i],aCH4Median[i], aThreshold[i],
+                     xDistPeak, xCH4Peak, aTCH4[i],aC2H6[i],aC2C1[i],aR[i],aMeanC2H6[i], sPeriod5Min, xOdom,
+                    aWD_CCWE_cor[i],aWD_CWN_cor[i],aWS_cor[i],aBearingCCWE[i],aBearingCWN[i],arolling8[i],
+                     arolling15[i],arolling30[i],arolling60[i],arollingc2h6_15[i],arollingc2h6_30[i],arollingc2h6_45[i],
+                     arollingch4_15[i],arollingch4_30[i],arollingch4_45[i],arollingch4_60[i]
+                     ])
+
+            cnt += 1
+            prevIndex = i
+
+        # Finding peak_id larger than 160.0 m
+        tmpsidlist = []
+        for r in lstCH4_ABP:
+            if (float(r[9]) > 160.0) and (r[0] not in tmpsidlist):
+                tmpsidlist.append(r[0])
+        cntPeak -= len(tmpsidlist)
+
+        fLog.write("Number of peaks found: " + str(cntPeak) + "\n")
+        print(f"{xCar} \t {xDate} \t {xFilename} \t {count} \t {len(lstCH4_ABP)}")
+
+        # write out the observed peaks to a csv to be read into a GIS
+        fOut = open(fnOut, 'w')
+        # s = "PEAK_NUM,EPOCHSTART,EPOCH,DATETIME,CH4,LON,LAT,CH4_BASELINE,CH4_THRESHOLD,PEAK_DIST_M,PEAK_CH4,TCH4,PERIOD5MIN\n"
+        s = "OP_NUM,OP_EPOCHSTART,OB_EPOCH,OB_DATETIME,OB_CH4,OB_LON,OB_LAT,OB_CH4_BASELINE,OB_CH4_MEAN,OB_CH4_STD,OB_CH4_MAX,OB_CH4_MIN,OB_CH4_MED," \
+            "OB_CH4_THRESHOLD,OP_PEAK_DIST_M,OP_PEAK_CH4,OB_TCH4,OB_C2H6," \
+            "OB_C2C1,OB_R,OB_C2H6_BASELINE,OB_PERIOD5MIN,ODOMETER,OB_WD_CCWE,OB_WD_CWN,OB_WS," \
+            "OB_BEARING_CCWE,OB_BEARING_CWN,OB_R_8,OB_R_15,OB_R_30,OB_R_60,OB_C2H6_15,OB_C2H6_30,OB_C2H6_45," \
+            "OB_CH4_15,OB_CH4_30,OB_CH4_45,OB_CH4_60\n"
+
+
+        fOut.write(s)
+
+        truecount = 0
+        for r in lstCH4_ABP:
+            if r[0] not in tmpsidlist:
+                s = ''
+                for rr in r:
+                    s += str(rr) + ','
+                s = s[:-1]
+                s += '\n'
+                fOut.write(s)
+                truecount += 1
+        fOut.close()
+        fLog.close()
+
+        openFile = pd.read_csv(fnOut)
+        if openFile.shape[0] != 0:
+            pkDistDf = openFile.copy().groupby('OP_NUM', as_index=False).apply(
+                lambda x: max(x.ODOMETER) - min(x.ODOMETER))
+            pkDistDf.columns = ['OP_NUM', 'OP_DISTANCE']
+            openFile = pd.merge(openFile.copy(), pkDistDf)
+            tempCount = openFile.groupby('OP_NUM', as_index=False).OP_EPOCHSTART.count().rename(
+                columns={'OP_EPOCHSTART': 'Frequency'})
+            tempCount = tempCount.loc[tempCount.Frequency >= minElevated, :]
+            if tempCount.shape[0] == 0:
+                print(f"No Observed Peaks with enough Elevated Readings Found in the file: {xFilename}")
+                tempCount.to_csv(fnOut) ## added to deal with issue where it wasn't being filtered out
+            elif tempCount.shape[0] != 0:
+                oFile = pd.merge(openFile, tempCount, on=['OP_NUM'])
+                openFile = oFile.copy()
+                del (oFile)
+                openFile["minElevated"] = openFile.apply(lambda x: int(minElevated), axis=1)
+                openFile['OB_CH4_AB'] = openFile.loc[:, 'OB_CH4'].sub(openFile.loc[:, 'OB_CH4_BASELINE'], axis=0)
+                openFile['OB_C2H6_AB'] = openFile.loc[:, 'OB_C2H6'].sub(openFile.loc[:, 'OB_C2H6_BASELINE'],axis=0)
+                openFile.to_csv(fnOut, index=False)
+
+
+                fileWt = weighted_loc(openFile, 'OB_LAT', 'OB_LON', 'OP_NUM', 'OB_CH4_AB',).loc[:, :].rename(
+                    columns={'OB_LAT': 'pk_LAT', 'OB_LON': 'pk_LON'}).reset_index(drop=True)
+                geometry_temp = [Point(lon, lat) for lon, lat in zip(fileWt['pk_LON'], fileWt['pk_LAT'])]
+                crs = 'EPSG:4326'
+                # geometry is the point of the lat/lon
+                # gdf_buff = gpd.GeoDataFrame(datFram, crs=crs, geometry=geometry_temp)
+
+                ## BUFFER AROUND EACH 'OP_NUM' WITH BUFFER DISTANCE
+                gdf_buff = gpd.GeoDataFrame(fileWt, crs=crs, geometry=geometry_temp)
+                # gdf_buff = makeGPD(datFram,'LON','LAT')
+
+                ##maybe this is the issue?
+                #gdf_buff = gdf_buff.to_crs(epsg=32610)
+                #gdf_buff['geometry'] = gdf_buff.loc[:, 'geometry'].buffer(30)
+                try:
+                    gdf_buff.to_file(jsonOut, driver="GeoJSON")
+                    #gdf_buff.to_file('testthing.geojson', driver="GeoJSON")
+                except:
+                    print("Error Saving JSON File")
+        elif openFile.shape[0] == 0:
+            print(f"No Observed Peaks Found in the file:{xFilename}")
+    except ValueError:
+        print("Error in Identify Peaks")
+        return False
+def process_raw_data_aeris_maybe(xCar, xDate, xDir, xFilename, bFirst, gZIP, xOut, initialTimeBack, shift,
+                                 maxSpeed='45',
+                                 minSpeed='2'):
+    """ input a raw .txt file with data (from aeris data file)
+    input:
+        txt file
+    output:
+        saved log file
+        saved csv file with processed data
+        saved info.csv file
+    """
+    import os
+    import sys
+    if sys.platform == 'win32':
+        windows = True
+    elif sys.platform != 'win32':
+        windows = False
+
+    import pandas as pd
+    import datetime
+    import os
+    import gzip
+    import numpy as np
+    # import csv
+    try:
+        xMaxCarSpeed = float(maxSpeed) / 2.23694  # CONVERTED TO M/S (default is 45mph)
+        xMinCarSpeed = float(minSpeed) / 2.23694  # CONVERTED TO M/S (default is 2mph)
+        xMinCarSpeed = -10
+        ########################################################################
+        #### WE DON'T HAVE AN RSSI INPUT
+        ### (SO THIS IS A PLACEHOLDER FOR SOME SORT OF QA/QC VARIABLE)
+        ##  xMinRSSI = 50  #if RSSI is below this we don't like it
+        ##################################################################
+
+        # reading in the data with specific headers
+        #          0     1    2    3       4           5    6       7        8        9          10                 11              12           13            14      15      16      17        18         19         20         21         22         23        24   25  26       27           28       29           30       31       32       33  34        35   36   37  38   39       40       41   42       43   44   45   46   47   48   49   50   51     52     53     54
+        sHeader = "Time Stamp,Inlet Number,P (mbars),T (degC),CH4 (ppm),H2O (ppm),C2H6 (ppb),R,C2/C1,Battery Charge (V),Power Input (mV),Current (mA),SOC (%),Latitude,Longitude"
+        sHeader = 'Time Stamp,Inlet Number,P (mbars),T (degC),CH4 (ppm),H2O (ppm),C2H6 (ppb),R,C2/C1,Battery Charge (V),Power Input (mV),Current (mA),SOC (%),Latitude,Longitude,U (m/sec),V (m/sec),W (m/sec),T (degC),Dir (deg),Speed (m/sec),Compass (deg)'
+        sOutHeader = "DATE,TIME,SECONDS,NANOSECONDS,VELOCITY,U,V,W,BCH4,BRSSI,TCH4,TRSSI,PRESS_MBAR,INLET,TEMPC,CH4,H20,C2H6,R,C2C1,BATTV,POWMV,CURRMA,SOCPER,LAT,LONG\n"
+        infoHeader = "FILENAME\n"
+        # somehow gZIP is indicating if  it is the first file name (I think if it is 0 then it is the first file)
+        if gZIP == 0:
+            f = gzip.open(xDir + "/" + xFilename,
+                          'r')  # if in python 3, change this to "r" or just "b" can't remember but something about a bit not a string
+        else:
+            f = open(xDir + xFilename, 'r')
+
+        infoHeader = "FILENAME\n"
+
+        import pandas as pd
+
+
+        # process - if first time on this car/date, then write header out
+        headerNames = sHeader.split(',')
+        # xdat = str('20') + xFilename[10:16]
+        xdat = xDate
+        fnOut = xOut + xCar + "_" + '20'+ xdat + "_dat.csv"  # set CSV output for raw data
+        removeOut = xOut + xCar + "_" + '20'+ xdat + "_removed.csv"
+        fnLog = xOut + xCar + "_" + '20'+ xdat + ".log"  # output for logfile
+        infOut = xOut + xCar + "_" +'20'+ xdat + "_info.csv"
+        #
+
+        # dtime = open(xDir + xFilename).readlines().pop(2).split(',')[0]
+        # firstdate = datetime(int(dtime[6:10]), int(dtime[0:2]), int(dtime[3:5]), int(dtime[11:13]),
+        #                     int(dtime[14:16]), int(dtime[17:19]), int(float(dtime[19:23]) * 1000000))
+        # firsttime = firstdate.strftime('%s.%f')
+        # firsttime = dt_to_epoch(firstdate)
+
+        #firsttime = float(open(xDir + xFilename).readlines().pop(2).split(',')[0])
+
+        fnOutTemp = xOut + xCar + "_" + xdat + "temp_dat.csv"  #
+
+        ## read in file
+
+        tempFile = pd.read_csv(xDir + "/" + xFilename, delimiter=",")
+        #dtime = tempFile.loc[2,'Time Stamp'].split(',')[0]
+
+        #firstdate = datetime(int(dtime[6:10]), int(dtime[0:2]), int(dtime[3:5]), int(dtime[11:13]),
+        #                     int(dtime[14:16]), int(dtime[17:19]), int(float(dtime[19:23]) * 1000000))
+
+        tempFile['dtime'] = tempFile.apply(lambda x: x['Time Stamp'].split(',')[0],axis=1)
+        tempFile['datime'] = tempFile.apply(lambda x: datetime.datetime(int(x.dtime[6:10]), int(x.dtime[0:2]), int(x.dtime[3:5]), int(x.dtime[11:13]),
+                             int(x.dtime[14:16]), int(x.dtime[17:19]), int(float(x.dtime[19:23]) * 1000000)),axis=1)
+        tempFile['DATE'] = tempFile.apply(lambda x: x.datime.strftime('%Y-%m-%d'),axis=1)
+        tempFile['TIME'] = tempFile.apply(lambda x: x.datime.strftime('%H:%M:%S'),axis=1)
+        tempFile['nearest10hz'] = tempFile.apply(lambda x: round(float(x.datime.timestamp()),1),axis=1)
+        tempFile['SECONDS'] = tempFile.apply(lambda x: int(float(str(x.nearest10hz)[11:]) * 1e9), axis=1)
+        tempFile1 = tempFile.copy().sort_values(by='nearest10hz',ascending=True).reset_index(drop=True)
+        tempFile1['nearest10hz'] = tempFile1.loc[:,'nearest10hz'].astype(float)
+        tempFile1['nearest10hz'] = tempFile1.loc[:,'nearest10hz'].astype(str)
+
+        del(tempFile)
+        tempFile = tempFile1.copy()
+
+        tempFile = tempFile.rename(columns={
+                                            'T (degC)':'T',
+                                            'Inlet Number':'inletNumber',
+                                            'P (mbars)':'P',
+                                            'CH4 (ppm)':'CH4',
+                                             'H2O (ppm)':'H2O',
+                                             'C2H6 (ppb)':'C2H6',
+                                            'C2/C1':'C1C2',
+                                            'Battery Charge (V)':'batteryCharge',
+                                            'Power Input (mV)':'powerInput',
+                                            'Current (mA)':'current',
+                                            'SOC (%)':'SOC','Time Stamp':'TimeStamp',
+                                            'Compass (deg)':'CompassDeg',
+                                            'Speed (m/sec)':'ws',
+                                            'Dir (deg)': 'winddir',
+                                            'U (m/sec)':'U',
+                                            'V (m/sec)': 'V',
+                                            'Latitude':'LAT',
+                                            'Longitude':'LONG',
+                                            'W (m/sec)':'W'})
+        #tempFile1 = tempFile.copy().sort_values('nearest10hz').reset_index(drop=True)
+        radians = False
+
+        wind_df_temp = tempFile.copy()
+        wind_df_temp['ttot'] = wind_df_temp.apply(lambda x: float(x.nearest10hz),axis=1)
+        wind_df = wind_df_temp.copy().sort_values(by='ttot',ascending=True).reset_index(drop=True)
+
+        wind_df['QUADRANT'] = wind_df.apply(lambda row: get_quadrant(row['U'], row['V']), axis=1)
+        wind_df['prev_LAT'] = wind_df.LAT.shift(periods=1)
+        wind_df['next_LAT'] = wind_df.LAT.shift(periods=-1)
+        wind_df['prev_LONG'] = wind_df.LONG.shift(periods=1)
+        wind_df['next_LONG'] = wind_df.LONG.shift(periods=-1)
+        wind_df['prev_TIME'] = wind_df.ttot.shift(periods=1)
+        wind_df['next_TIME'] = wind_df.ttot.shift(periods=-1)
+
+        wind_df['distance'] = wind_df.apply(
+            lambda row: haversine(row['prev_LAT'], row['prev_LONG'], row['next_LAT'], row['next_LONG']), axis=1)
+
+        wind_df['bearing'] = wind_df.apply(
+            lambda row: calc_bearing(row['prev_LAT'], row['next_LAT'], row['prev_LONG'], row['next_LONG'], radians),
+            axis=1)
+        wind_df['timediff'] = wind_df.apply(lambda row: row['next_TIME'] - row['prev_TIME'], axis=1)
+        wind_df['VELOCITY'] = wind_df.apply(lambda row:calc_velocity(row['timediff'],row['distance']),axis=1)
+
+
+        try:
+            wind_df['W'] = wind_df['W'].astype(float)
+        except:
+            wind_df_other = wind_df.copy()
+            wind_df_other['W'] = wind_df_other.apply(lambda x: 0 if x.W == 'XX.X' else x.W, axis=1)
+            wind_df_other['fW'] = wind_df_other["W"].str.split(".", n=1, expand=True)[0]
+            wind_df_other1 = wind_df_other.loc[wind_df_other['fW'].notnull(),].reset_index(drop=True)
+            wind_df_other1['firstW'] = wind_df_other1.apply(lambda x: int(x['fW']), axis=1)
+            wind_df_other1['sW'] = wind_df_other1["W"].str.split(".", n=1, expand=True)[1]
+            wind_df_other2 = wind_df_other1.loc[wind_df_other1['sW'].notnull(),].reset_index(drop=True)
+            wind_df_other2['secW'] = wind_df_other2.apply(lambda x: int(x['sW']), axis=1)
+            wind_df_other2['wloc'] = wind_df_other2.apply(lambda x: float(str(x.firstW) + '.' + str(x.secW)), axis=1)
+            wind_df_other3 = wind_df_other2.drop(columns=['W', 'secW', 'sW', 'fW', 'firstW'])
+            del (wind_df)
+            wind_df4 = wind_df_other3.rename(columns={'wloc': 'W'})
+            wind_df = wind_df4.copy()
+            del (wind_df4)
+
+        try:
+            wind_df['U'] = wind_df['U'].astype(float)
+        except:
+            wind_df_other = wind_df.copy()
+            wind_df_other['U'] = wind_df_other.apply(lambda x: 0 if x.U == 'XX.X' else x.U, axis=1)
+            wind_df_other['fU'] = wind_df_other["U"].str.split(".", n=1, expand=True)[0]
+            wind_df_other1 = wind_df_other.loc[wind_df_other['fU'].notnull(),].reset_index(drop=True)
+            wind_df_other1['firstU'] = wind_df_other1.apply(lambda x: int(x['fU']), axis=1)
+            wind_df_other1['sU'] = wind_df_other1["U"].str.split(".", n=1, expand=True)[1]
+            wind_df_other2 = wind_df_other1.loc[wind_df_other1['sU'].notnull(),].reset_index(drop=True)
+            wind_df_other2['secU'] = wind_df_other2.apply(lambda x: int(x['sU']), axis=1)
+            wind_df_other2['uloc'] = wind_df_other2.apply(lambda x: float(str(x.firstU) + '.' + str(x.secU)), axis=1)
+            wind_df_other3 = wind_df_other2.drop(columns=['U', 'secU', 'sU', 'fU', 'firstU'])
+            del (wind_df)
+            wind_df4 = wind_df_other3.rename(columns={'uloc': 'U'})
+            wind_df = wind_df4.copy()
+            del (wind_df4)
+
+        try:
+            wind_df['V'] = wind_df['V'].astype(float)
+        except:
+            wind_df_other = wind_df.copy()
+            wind_df_other['V'] = wind_df_other.apply(lambda x: 0 if x.V == 'XX.X' else x.V, axis=1)
+            wind_df_other['fV'] = wind_df_other["V"].str.split(".", n=1, expand=True)[0]
+            wind_df_other1 = wind_df_other.loc[wind_df_other['fV'].notnull(),].reset_index(drop=True)
+            wind_df_other1['firstV'] = wind_df_other1.apply(lambda x: int(x['fV']), axis=1)
+            wind_df_other1['sV'] = wind_df_other1["V"].str.split(".", n=1, expand=True)[1]
+            wind_df_other2 = wind_df_other1.loc[wind_df_other1['sV'].notnull(),].reset_index(drop=True)
+            wind_df_other2['secV'] = wind_df_other2.apply(lambda x: int(x['sV']), axis=1)
+            wind_df_other2['vloc'] = wind_df_other2.apply(lambda x: float(str(x.firstV) + '.' + str(x.secV)), axis=1)
+            wind_df_other3 = wind_df_other2.drop(columns=['V', 'secV', 'sV', 'fV', 'firstV'])
+            del (wind_df)
+            wind_df4 = wind_df_other3.rename(columns={'vloc': 'V'})
+            wind_df = wind_df4.copy()
+            del (wind_df4)
+
+
+        wind_df['U_cor'] = wind_df.apply(lambda row: float(row['U']) + float(row['VELOCITY']), axis=1)
+        wind_df['horz_length'] = wind_df.apply(lambda row: np.sqrt(row['U_cor'] ** 2 + row['V'] ** 2), axis=1)
+        wind_df['uncor_theta'] = wind_df.apply(
+            lambda row: calc_bearing(row['U_cor'], row['V'], row['QUADRANT'], row['horz_length'], radians), axis=1)
+        wind_df['adj_theta'] = wind_df.apply(lambda row: (row['uncor_theta'] + row['bearing']) % 360, axis=1)
+        wind_df['totalWind'] = wind_df.apply(lambda row: np.sqrt(row['horz_length'] ** 2 + row['W'] ** 2), axis=1)
+        wind_df['phi'] = wind_df.apply(lambda row: np.arctan(row['horz_length']), axis=1)
+
+        wind_df['adj_v'] = wind_df.apply(lambda row: -row['horz_length'] * np.cos(row['adj_theta']), axis=1)
+        wind_df['adj_u'] = wind_df.apply(lambda row: row['horz_length'] * np.sin(row['adj_theta']), axis=1)
+
+        ## GO THROUGH WIND
+        window_size = 30
+        u_series = pd.Series(wind_df['adj_u'])
+        u_windows = u_series.rolling(window_size)
+        u_averages = pd.DataFrame(u_windows.mean())
+        u_averages.columns = ['U_avg']
+        u_averages['key'] = u_averages.index
+
+        v_series = pd.Series(wind_df['adj_v'])
+        v_windows = v_series.rolling(window_size)
+        v_averages = pd.DataFrame(v_windows.mean())
+        v_averages.columns = ['V_avg']
+        v_averages['key'] = v_averages.index
+
+        w_series = pd.Series(wind_df['W'])
+        w_windows = w_series.rolling(window_size)
+        w_averages = pd.DataFrame(w_windows.mean())
+        w_averages.columns = ['W_avg']
+        w_averages['key'] = w_averages.index
+
+        vw_df = w_averages.set_index('key').join(v_averages.set_index('key'))
+        vw_df['key'] = vw_df.index
+        uvw_df = vw_df.set_index('key').join(u_averages.set_index('key'))
+        uvw_df['key'] = uvw_df.index
+        wind_df2 = wind_df.copy()
+        wind_df2['key'] = wind_df2.index
+        wind_df = uvw_df.set_index('key').join(wind_df2.set_index('key'))
+
+        wind_df['r_avg'] = wind_df.apply(lambda row: np.sqrt(row['U_avg'] ** 2 + row['V_avg'] ** 2), axis=1)
+        wind_df['theta_avg'] = wind_df.apply(lambda row: np.arctan(-row['U_avg'] / row['V_avg']), axis=1)
+
+        wind_df['shift_CH4'] = wind_df.CH4.shift(periods=int(float(shift)))
+        wind_df['raw_CH4'] = wind_df.apply(lambda row: row['CH4'], axis=1)
+        wind_df['BCH4'] = wind_df.loc[:, ['shift_CH4']]
+        wind_df['CH4'] = wind_df.loc[:, ['shift_CH4']]
+        wind_df['TCH4'] = wind_df.loc[:, ['shift_CH4']]
+
+        wind_df['shift_R'] = wind_df.R.shift(periods=int(float(shift)))
+        wind_df['raw_R'] = wind_df.apply(lambda row: row['R'], axis=1)
+
+        wind_df2 = wind_df[wind_df.CH4.notnull()]
+
+        wind_df2 = wind_df.copy()
+        wind_df3 = wind_df2.drop(
+            ['QUADRANT', 'prev_LAT', 'next_LAT', 'prev_LONG', 'next_LONG', 'prev_TIME', 'next_TIME',
+             'timediff', 'uncor_theta', 'CH4', 'R'], axis=1)
+        wind_df3['CH4'] = wind_df3.loc[:, 'shift_CH4']
+        wind_df3['R'] = wind_df3.loc[:, 'shift_R']
+        wind_df3 = wind_df3.drop(['shift_CH4', 'shift_R'], axis=1)
+        # wind_df4 = wind_df3.loc[wind_df3.totalWind.notnull(),:]
+        wind_df3['odometer'] = wind_df3.loc[:, 'distance'].cumsum()
+
+        if bFirst:
+            # tempFile.sort_values('nearest10hz').reset_index(drop=True).to_csv(fnOutTemp)
+            fLog = open(fnLog, 'w')
+            infOut = open(infOut, 'w')
+            infOut.write(infoHeader)
+            print(f"fnLog:{fnOut}")
+
+        if not bFirst:
+            # fOut = open(fnOut, 'a')
+            fLog = open(fnLog, 'a')
+            infOut = open(infOut, 'a')
+
+        # fLog.write("Processing file: " + str(xFilename) + "\n")
+
+        wind_df4 = wind_df3.copy()
+        wind_df5 = wind_df4.loc[wind_df4.VELOCITY > -1, :]
+        wrongSpeed = wind_df4.loc[wind_df4.VELOCITY <= xMinCarSpeed, :]
+        wrongSpeed = wrongSpeed.assign(Reason='velocity too slow')
+
+        # wind_df6 = wind_df5.loc[wind_df5.VELOCITY < xMaxCarSpeed, :]
+        wind_df6 = wind_df5.loc[wind_df5.VELOCITY < 1000, :]
+
+        wrongSpeed2 = wind_df5.loc[wind_df5.VELOCITY >= xMaxCarSpeed, :]
+        wrongSpeed2 = wrongSpeed2.assign(Reason='velocity too fast')
+
+        wrongSpeeds = pd.concat([wrongSpeed, wrongSpeed2])
+        # notGood = pd.concat([wrongSpeeds,nullCH4])
+        notGood = pd.concat([wrongSpeeds])
+
+        # wind_df6 = wind_df6a.loc[wind_df6a.R > .6999, :]
+
+        del (wind_df4)
+        wind_df4 = wind_df6.copy().drop_duplicates()
+        wind_df5 = wind_df4.loc[wind_df4.CH4.notnull(), :]
+
+        nullCH4 = wind_df4.loc[~wind_df4.CH4.notnull(), :]
+        if nullCH4.shape[0] > 0:
+            nullCH4 = nullCH4.assign(Reason='CH4 NA')
+            removedDF = pd.concat([notGood, nullCH4])
+        elif nullCH4.shape[0] == 0:
+            removedDF = notGood
+        wind_df4 = wind_df5.copy()
+
+        def rolling_cor(df, first, sec, window, newname):
+            if (window % 2 == 1):
+                sidewind = (window - 1) / 2
+            else:
+                sidewind = window / 2
+
+            length = df.shape[0]
+            cor_i = []
+            for i in range(length):
+                if (((i) < sidewind) or (i >= (length - sidewind))):
+                    cor_i.append(0)
+                else:
+                    try:
+                        cor_i.append(xvals.corr(yvals))
+                        xvals = df.loc[(i - sidewind):(i + sidewind + 1), first]
+                        yvals = df.loc[(i - sidewind):(i + sidewind + 1), sec]
+                    except:
+                        cor_i.append(-2)
+
+            df.loc[:, newname] = cor_i
+            return (df)
+        def rolling_c2h6(df, colname, window, percentile, newname):
+            import numpy as np
+            if (window % 2 == 1):
+                sidewind = (window - 1) / 2
+            else:
+                sidewind = window / 2
+
+            length = df.shape[0]
+            cor_i = []
+            for i in range(length):
+                if (((i) < sidewind) or (i >= (length - sidewind))):
+                    cor_i.append(0)
+                else:
+                    try:
+                        c2h6vals = df.loc[(i - sidewind):(i + sidewind + 1), colname]
+                        cor_i.append(np.percentile(c2h6vals, percentile))
+                    except:
+                        cor_i.append(-999)
+            df.loc[:, newname] = cor_i
+            return (df)
+
+        wind_df5 = rolling_cor(wind_df4, 'CH4', 'C2H6', 8, 'rollingR_8')
+        wind_df6 = rolling_cor(wind_df5, 'CH4', 'C2H6', 15, 'rollingR_15')
+        wind_df7 = rolling_cor(wind_df6, 'CH4', 'C2H6', 30, 'rollingR_30')
+        wind_df8 = rolling_cor(wind_df7, 'CH4', 'C2H6', 45, 'rollingR_45')
+        wind_df9 = rolling_cor(wind_df8, 'CH4', 'C2H6', 60, 'rollingR_60')
+
+        wind_df10 = rolling_c2h6(wind_df9, 'C2H6', 30, 50, 'rollingc2h6_30')
+        wind_df11 = rolling_c2h6(wind_df10, 'C2H6', 15, 50, 'rollingc2h6_15')
+        wind_df12 = rolling_c2h6(wind_df11, 'C2H6', 45, 50, 'rollingc2h6_45')
+
+        wind_df13 = rolling_c2h6(wind_df12, 'CH4', 45, 50, 'rollingch4_45')
+        wind_df14 = rolling_c2h6(wind_df13, 'CH4', 30, 50, 'rollingch4_30')
+        wind_df15 = rolling_c2h6(wind_df14, 'CH4', 15, 50, 'rollingch4_15')
+        wind_df16 = rolling_c2h6(wind_df15, 'CH4', 60, 50, 'rollingch4_60')
+
+        del (wind_df4)
+        wind_df4 = wind_df16.copy()
+        ## if you want to filter out high temperatures
+        # wind_df4 = wind_df5.loc[wind_df5.TEMPC < 95, :].reset_index(drop=True)
+
+        # fLog.write("Usable lines - " + str(wind_df4.shape[0]) + "." + "\n")
+        # fLog.close()
+
+        if bFirst:
+            wind_df4.sort_values(by='ttot',ascending=True).reset_index(drop=True).to_csv(fnOut, index=False)
+            removedDF.to_csv(removeOut, index=False)
+        elif not bFirst:
+            norm = pd.read_csv(fnOut)
+            pd.concat([norm, wind_df4]).sort_values(by='ttot',ascending=True).reset_index(drop=True).to_csv(fnOut, index=False)
+            removed = pd.read_csv(removeOut)
+            pd.concat([removed, removedDF]).sort_values(by='ttot',ascending=True).reset_index(drop=True).to_csv(removeOut,
+                                                                                                    index=False)
+
+        # os.remove(fnOutTemp)
+        return True
+    except ValueError:
+        return False

@@ -12,7 +12,6 @@ import os
 with open('/Users/emilywilliams/OneDrive - Southern Cross Corp/amld_script/running_scripts/amld_config.yaml', 'r') as file:
     configure_settings = yaml.load(file, Loader=yaml.FullLoader)
 
-
 raw_data_loc = configure_settings['raw_data_loc']
 function_file_Loc = configure_settings['function_file_Loc']
 results_folder_loc = configure_settings['results_folder_loc']
@@ -75,7 +74,7 @@ from amld_functions import unique, unIfInt, \
     process_raw_data, process_raw_data_aeris, \
     identify_peaks_CSU, weighted_loc, nameFiles, calc_velocity, \
     check_lst, nanthing, print_results, save_results, dt_to_epoch, minread_to_date, \
-    identify_peaks_amld,process_raw_data_amld
+    identify_peaks_amld,process_raw_data_amld,identify_peaks_amld_aeris,process_raw_data_aeris_maybe
 
 import rtree, os, sys, datetime, time, math, numpy, csv, gzip, shutil, ast, swifter
 from math import radians, sin, cos, sqrt, asin
