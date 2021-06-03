@@ -183,12 +183,15 @@ def estimate_emissions(excess_CH4):
         estimated emission from that observed ch4 level
     """
     import math
-    a = 0.4630664
-    b = 0.7443749
+    #a = 0.4630664
+    #b = 0.7443749
     a1 = 1.2889
     b1 = 0.35232
     a2 = 1.755891
     b2 = 0.4438203
+
+    a= -1.370
+    b=  0.823
 
     m = math.exp((excess_CH4 - a) / b)
     # if m < math.exp(3.157):
